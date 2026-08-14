@@ -77,7 +77,8 @@ def save_issues(issues):
     with open(ISSUES_FILE, "w", encoding="utf-8") as f:
         json.dump(issues, f, ensure_ascii=False, indent=2)
 
-async def send_welcome(chat_id, context, bot, edit_message=False, message_id=None):
+async def send_welcome(chat_id, context, delete_previous=False, previous_message_id=None):
+    """Отправляет приветственное сообщение с клавиатурой."""
     text = (
         "👋 Привет! Я бот для скачивания видео без водяных знаков!\n\n"
         "📌 Поддерживаемые платформы:\n"
@@ -95,27 +96,24 @@ async def send_welcome(chat_id, context, bot, edit_message=False, message_id=Non
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    if edit_message and message_id:
-        await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            reply_markup=reply_markup
-        )
-        return
+    if delete_previous and previous_message_id:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=previous_message_id)
+        except Exception:
+            pass
 
     if WELCOME_IMAGE_URL:
         try:
             if WELCOME_IMAGE_URL.startswith('/') or WELCOME_IMAGE_URL.startswith('./'):
                 with open(WELCOME_IMAGE_URL, 'rb') as f:
-                    await bot.send_photo(
+                    return await context.bot.send_photo(
                         chat_id=chat_id,
                         photo=f,
                         caption=text,
                         reply_markup=reply_markup
                     )
             else:
-                await bot.send_photo(
+                return await context.bot.send_photo(
                     chat_id=chat_id,
                     photo=WELCOME_IMAGE_URL,
                     caption=text,
@@ -123,9 +121,9 @@ async def send_welcome(chat_id, context, bot, edit_message=False, message_id=Non
                 )
         except Exception as e:
             logger.error(f"Ошибка отправки фото: {e}")
-            await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+            return await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
     else:
-        await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        return await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
 
 async def download_video(url: str) -> str:
     ffmpeg_path = shutil.which("ffmpeg")
@@ -169,7 +167,7 @@ async def download_video(url: str) -> str:
                         return os.path.join("downloads", f)
             return filename
     except Exception as e:
-        logger.error(f"Ошибка скачивания: {e}")
+        logger.error(f"Ошибка скачивания с ffmpeg: {e}")
         logger.info("Пробую скачать без ffmpeg (только видео)...")
         try:
             ydl_opts_no_ffmpeg = {
@@ -204,7 +202,7 @@ def is_valid_url(url: str) -> bool:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user(user.id)
-    await send_welcome(update.effective_chat.id, context, context.bot)
+    await send_welcome(update.effective_chat.id, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -260,40 +258,58 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    chat_id = query.message.chat_id
+    message_id = query.message.message_id
 
     if data == "stats":
         stats = load_stats()
         users = load_users()
-        await query.edit_message_text(
-            f"📊 Статистика бота\n\n"
-            f"👥 Всего пользователей: {len(users)}\n"
-            f"📥 Всего скачиваний: {stats['total_downloads']}",
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📊 Статистика бота\n\n"
+                 f"👥 Всего пользователей: {len(users)}\n"
+                 f"📥 Всего скачиваний: {stats['total_downloads']}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]])
         )
+
     elif data == "back_to_start":
-        await query.delete_message()
-        await send_welcome(query.message.chat_id, context, context.bot)
+        await send_welcome(chat_id, context, delete_previous=True, previous_message_id=message_id)
+
     elif data == "report_issue":
         user = update.effective_user
         last_time = user_last_issue.get(user.id)
         if last_time and (datetime.now() - last_time) < timedelta(minutes=90):
             remaining = int(90 - (datetime.now() - last_time).total_seconds() // 60)
-            await query.edit_message_text(
-                f"⚠️ Вы уже отправляли сообщение об ошибке. Повторить можно через {remaining} минут.",
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Вы уже отправляли сообщение об ошибке. Повторить можно через {remaining} минут.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]])
             )
             return
         context.user_data["awaiting_issue"] = True
-        await query.edit_message_text(
-            "📝 Опишите проблему или баг, с которым вы столкнулись.\n\n"
-            "Отправьте ваше сообщение одним текстом. Мы постараемся решить проблему как можно быстрее.\n\n"
-            "Для отмены отправьте /cancel",
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="📝 Опишите проблему или баг, с которым вы столкнулись.\n\n"
+                 "Отправьте ваше сообщение одним текстом. Мы постараемся решить проблему как можно быстрее.\n\n"
+                 "Для отмены отправьте /cancel",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel_issue")]])
         )
+
     elif data == "cancel_issue":
         context.user_data.pop("awaiting_issue", None)
-        await query.delete_message()
-        await send_welcome(query.message.chat_id, context, context.bot)
+        await send_welcome(chat_id, context, delete_previous=True, previous_message_id=message_id)
 
 async def handle_issue_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -348,43 +364,67 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⛔ Доступ запрещён.")
         return
 
+    chat_id = query.message.chat_id
+    message_id = query.message.message_id
+
     if query.data == "admin_stats":
         stats = load_stats()
         users = load_users()
-        await query.edit_message_text(
-            f"📊 Статистика бота\n\n"
-            f"👥 Всего пользователей: {len(users)}\n"
-            f"📥 Всего скачиваний: {stats['total_downloads']}",
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📊 Статистика бота\n\n"
+                 f"👥 Всего пользователей: {len(users)}\n"
+                 f"📥 Всего скачиваний: {stats['total_downloads']}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
         )
     elif query.data == "admin_users":
         users = load_users()
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
         if not users:
-            await query.edit_message_text(
-                "👥 Пользователи\n\nПока нет зарегистрированных пользователей.",
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="👥 Пользователи\n\nПока нет зарегистрированных пользователей.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
             )
             return
         user_list = "\n".join([f"• {uid}" for uid in sorted(users)])
-        await query.edit_message_text(
-            f"👥 Пользователи\n\n{user_list}",
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"👥 Пользователи\n\n{user_list}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
         )
     elif query.data == "admin_broadcast":
         context.user_data["broadcast_mode"] = True
-        await query.edit_message_text(
-            "📢 Рассылка\n\n"
-            "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
-            "Поддерживаются текст, фото, видео, документы.\n\n"
-            "Для отмены отправьте /cancel",
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="📢 Рассылка\n\n"
+                 "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
+                 "Поддерживаются текст, фото, видео, документы.\n\n"
+                 "Для отмены отправьте /cancel",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отменить", callback_data="admin_back")]])
         )
     elif query.data == "admin_issues":
         issues = load_issues()
         unresolved = [i for i in issues if not i.get("resolved", False)]
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
         if not unresolved:
-            await query.edit_message_text(
-                "✅ Нет нерешённых проблем.",
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="✅ Нет нерешённых проблем.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
             )
             return
@@ -396,7 +436,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i in unresolved[:5]:
             keyboard.append([InlineKeyboardButton(f"Решить #{i['id']}", callback_data=f"resolve_issue_{i['id']}")])
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_back")])
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
     elif query.data.startswith("resolve_issue_"):
         issue_id = int(query.data.split("_")[2])
         issues = load_issues()
@@ -405,7 +445,15 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 i["resolved"] = True
                 break
         save_issues(issues)
-        await query.edit_message_text("✅ Проблема отмечена как решённая.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_issues")]]))
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ Проблема отмечена как решённая.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_issues")]])
+        )
     elif query.data == "admin_back":
         keyboard = [
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
@@ -413,8 +461,13 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
             [InlineKeyboardButton("⚠️ Проблемы", callback_data="admin_issues")],
         ]
-        await query.edit_message_text(
-            "🔧 Админ-панель\n\nВыберите действие:",
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🔧 Админ-панель\n\nВыберите действие:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
