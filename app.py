@@ -77,6 +77,56 @@ def save_issues(issues):
     with open(ISSUES_FILE, "w", encoding="utf-8") as f:
         json.dump(issues, f, ensure_ascii=False, indent=2)
 
+async def send_welcome(chat_id, context, bot, edit_message=False, message_id=None):
+    text = (
+        "👋 Привет! Я бот для скачивания видео без водяных знаков!\n\n"
+        "📌 Поддерживаемые платформы:\n"
+        "• TikTok (tiktok.com)\n"
+        "• YouTube / Shorts (youtube.com, youtu.be)\n"
+        "• Instagram (публичные посты/Reels)\n\n"
+        "🔹 Как пользоваться:\n"
+        "Просто отправьте мне ссылку на видео — я скачаю его без водяного знака и пришлю вам.\n\n"
+        "🤖 Бот разработан студией KORSHUN BOTS\n"
+        "📩 Заказать бота или посмотреть портфолио: @korshun112_bot"
+    )
+    keyboard = [
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton("💬 Сообщить об ошибке", callback_data="report_issue")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if edit_message and message_id:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup
+        )
+        return
+
+    if WELCOME_IMAGE_URL:
+        try:
+            if WELCOME_IMAGE_URL.startswith('/') or WELCOME_IMAGE_URL.startswith('./'):
+                with open(WELCOME_IMAGE_URL, 'rb') as f:
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=text,
+                        reply_markup=reply_markup
+                    )
+            else:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=WELCOME_IMAGE_URL,
+                    caption=text,
+                    reply_markup=reply_markup
+                )
+        except Exception as e:
+            logger.error(f"Ошибка отправки фото: {e}")
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+    else:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
 async def download_video(url: str) -> str:
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
@@ -84,6 +134,10 @@ async def download_video(url: str) -> str:
         if os.path.exists(local_ffmpeg):
             ffmpeg_path = local_ffmpeg
             os.chmod(local_ffmpeg, 0o755)
+    if ffmpeg_path:
+        logger.info(f"FFmpeg найден: {ffmpeg_path}")
+    else:
+        logger.warning("FFmpeg не найден. Видео может быть без звука.")
 
     ydl_opts = {
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -101,7 +155,6 @@ async def download_video(url: str) -> str:
     }
     if ffmpeg_path:
         ydl_opts["ffmpeg_location"] = ffmpeg_path
-        logger.info(f"FFmpeg найден: {ffmpeg_path}")
 
     os.makedirs("downloads", exist_ok=True)
     try:
@@ -117,7 +170,28 @@ async def download_video(url: str) -> str:
             return filename
     except Exception as e:
         logger.error(f"Ошибка скачивания: {e}")
-        return None
+        logger.info("Пробую скачать без ffmpeg (только видео)...")
+        try:
+            ydl_opts_no_ffmpeg = {
+                "format": "best[ext=mp4]/best",
+                "outtmpl": "downloads/%(title)s_%(id)s.%(ext)s",
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+                "extract_flat": False,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts_no_ffmpeg) as ydl:
+                info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=True))
+                filename = ydl.prepare_filename(info)
+                if not os.path.exists(filename):
+                    base = os.path.splitext(filename)[0]
+                    for f in os.listdir("downloads"):
+                        if f.startswith(os.path.basename(base)):
+                            return os.path.join("downloads", f)
+                return filename
+        except Exception as e2:
+            logger.error(f"Ошибка скачивания без ffmpeg: {e2}")
+            return None
 
 def is_valid_url(url: str) -> bool:
     patterns = [
@@ -130,45 +204,7 @@ def is_valid_url(url: str) -> bool:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user(user.id)
-
-    text = (
-        "👋 Привет! Я бот для скачивания видео без водяных знаков!\n\n"
-        "📌 Поддерживаемые платформы:\n"
-        "• TikTok (tiktok.com)\n"
-        "• YouTube / Shorts (youtube.com, youtu.be)\n"
-        "• Instagram (публичные посты/Reels)\n\n"
-        "🔹 Как пользоваться:\n"
-        "Просто отправьте мне ссылку на видео — я скачаю его без водяного знака и пришлю вам.\n\n"
-        "🤖 Бот разработан студией KORSHUN BOTS\n"
-        "📩 Заказать бота или посмотреть портфолио: @korshun112_bot"
-    )
-
-    keyboard = [
-        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton("💬 Сообщить об ошибке", callback_data="report_issue")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    if WELCOME_IMAGE_URL:
-        try:
-            if WELCOME_IMAGE_URL.startswith('/') or WELCOME_IMAGE_URL.startswith('./'):
-                with open(WELCOME_IMAGE_URL, 'rb') as f:
-                    await update.message.reply_photo(
-                        photo=f,
-                        caption=text,
-                        reply_markup=reply_markup
-                    )
-            else:
-                await update.message.reply_photo(
-                    photo=WELCOME_IMAGE_URL,
-                    caption=text,
-                    reply_markup=reply_markup
-                )
-        except Exception as e:
-            logger.error(f"Ошибка отправки фото: {e}")
-            await update.message.reply_text(text, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup)
+    await send_welcome(update.effective_chat.id, context, context.bot)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -235,7 +271,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]])
         )
     elif data == "back_to_start":
-        await cmd_start(update, context)
+        await query.delete_message()
+        await send_welcome(query.message.chat_id, context, context.bot)
     elif data == "report_issue":
         user = update.effective_user
         last_time = user_last_issue.get(user.id)
@@ -253,12 +290,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Для отмены отправьте /cancel",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel_issue")]])
         )
-
-async def cancel_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data.pop("awaiting_issue", None)
-    await query.edit_message_text("❌ Отправка сообщения об ошибке отменена.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]]))
+    elif data == "cancel_issue":
+        context.user_data.pop("awaiting_issue", None)
+        await query.delete_message()
+        await send_welcome(query.message.chat_id, context, context.bot)
 
 async def handle_issue_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
