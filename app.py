@@ -117,8 +117,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 *Как пользоваться:*\n"
         "Просто отправьте мне ссылку на видео — я скачаю его без водяного знака и пришлю вам.\n\n"
         "🤖 *Бот разработан студией KORSHUN BOTS*\n"
-        "📩 Заказать бота или посмотреть портфолио: @korshun112_bot\n\n"
-        "👨‍💼 *Администратор:* /admin — для управления ботом"
+        "📩 Заказать бота или посмотреть портфолио: @korshun112_bot"
     )
 
     keyboard = [[InlineKeyboardButton("📊 Статистика", callback_data="stats")]]
