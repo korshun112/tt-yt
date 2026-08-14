@@ -78,7 +78,6 @@ def save_issues(issues):
         json.dump(issues, f, ensure_ascii=False, indent=2)
 
 async def send_welcome(chat_id, context, delete_previous=False, previous_message_id=None):
-    """Отправляет приветственное сообщение с клавиатурой."""
     text = (
         "👋 Привет! Я бот для скачивания видео без водяных знаков!\n\n"
         "📌 Поддерживаемые платформы:\n"
@@ -381,6 +380,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  f"📥 Всего скачиваний: {stats['total_downloads']}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
         )
+
     elif query.data == "admin_users":
         users = load_users()
         try:
@@ -400,6 +400,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=f"👥 Пользователи\n\n{user_list}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
         )
+
     elif query.data == "admin_broadcast":
         context.user_data["broadcast_mode"] = True
         try:
@@ -414,6 +415,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  "Для отмены отправьте /cancel",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отменить", callback_data="admin_back")]])
         )
+
     elif query.data == "admin_issues":
         issues = load_issues()
         unresolved = [i for i in issues if not i.get("resolved", False)]
@@ -429,31 +431,67 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         text = "⚠️ Проблемы\n\n"
+        keyboard = []
         for i in unresolved[:10]:
             text += f"ID {i['id']}: {i['user_name']} – {i['text'][:50]}...\n"
+            keyboard.append([
+                InlineKeyboardButton(f"✅ Решить #{i['id']}", callback_data=f"resolve_issue_{i['id']}"),
+                InlineKeyboardButton(f"🗑 Удалить #{i['id']}", callback_data=f"delete_issue_{i['id']}")
+            ])
         text += f"\nВсего нерешённых: {len(unresolved)}"
-        keyboard = []
-        for i in unresolved[:5]:
-            keyboard.append([InlineKeyboardButton(f"Решить #{i['id']}", callback_data=f"resolve_issue_{i['id']}")])
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_back")])
-        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
     elif query.data.startswith("resolve_issue_"):
         issue_id = int(query.data.split("_")[2])
         issues = load_issues()
+        issue_to_resolve = None
         for i in issues:
             if i["id"] == issue_id:
                 i["resolved"] = True
+                issue_to_resolve = i
                 break
         save_issues(issues)
+
+        if issue_to_resolve:
+            try:
+                await context.bot.send_message(
+                    chat_id=issue_to_resolve["user_id"],
+                    text="✅ Ваша проблема решена. Спасибо за обращение!"
+                )
+            except Exception as e:
+                logger.error(f"Не удалось отправить уведомление пользователю {issue_to_resolve['user_id']}: {e}")
+
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
         except Exception:
             pass
         await context.bot.send_message(
             chat_id=chat_id,
-            text="✅ Проблема отмечена как решённая.",
+            text="✅ Проблема отмечена как решённая, пользователь уведомлён.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_issues")]])
         )
+
+    elif query.data.startswith("delete_issue_"):
+        issue_id = int(query.data.split("_")[2])
+        issues = load_issues()
+        issues = [i for i in issues if i["id"] != issue_id]
+        save_issues(issues)
+
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🗑 Проблема удалена.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_issues")]])
+        )
+
     elif query.data == "admin_back":
         keyboard = [
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
@@ -538,7 +576,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, broadcast_handler))
 
     app.add_handler(CallbackQueryHandler(button_callback, pattern="^(stats|back_to_start|report_issue|cancel_issue)$"))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_|^resolve_issue_"))
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_|^resolve_issue_|^delete_issue_"))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling()
