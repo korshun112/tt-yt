@@ -10,6 +10,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 import yt_dlp
+import shutil
 
 # ===================== НАСТРОЙКИ =====================
 load_dotenv()
@@ -63,8 +64,16 @@ def increment_stats():
     save_stats(stats)
     return stats["total_downloads"]
 
-# ===================== СКАЧИВАНИЕ ВИДЕО =====================
+# ===================== СКАЧИВАНИЕ ВИДЕО С FFMPEG =====================
 async def download_video(url: str) -> str:
+    # Ищем ffmpeg: сначала в системе, затем в папке с ботом
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        local_ffmpeg = os.path.join(os.path.dirname(__file__), "ffmpeg")
+        if os.path.exists(local_ffmpeg):
+            ffmpeg_path = local_ffmpeg
+            os.chmod(local_ffmpeg, 0o755)
+
     ydl_opts = {
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "outtmpl": "downloads/%(title)s_%(id)s.%(ext)s",
@@ -79,6 +88,10 @@ async def download_video(url: str) -> str:
             "preferedformat": "mp4",
         }],
     }
+    if ffmpeg_path:
+        ydl_opts["ffmpeg_location"] = ffmpeg_path
+        logger.info(f"FFmpeg найден: {ffmpeg_path}")
+
     os.makedirs("downloads", exist_ok=True)
     try:
         loop = asyncio.get_event_loop()
@@ -106,18 +119,19 @@ def is_valid_url(url: str) -> bool:
 # ===================== ОБРАБОТЧИКИ КОМАНД =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    is_new = add_user(user.id)
+    add_user(user.id)
 
     text = (
-        "👋 *Привет! Я бот для скачивания видео без водяных знаков!*\n\n"
-        "📌 *Поддерживаемые платформы:*\n"
+        "👋 Привет! Я бот для скачивания видео без водяных знаков!\n\n"
+        "📌 Поддерживаемые платформы:\n"
         "• TikTok (tiktok.com)\n"
         "• YouTube / Shorts (youtube.com, youtu.be)\n"
         "• Instagram (публичные посты/Reels)\n\n"
-        "🔹 *Как пользоваться:*\n"
+        "🔹 Как пользоваться:\n"
         "Просто отправьте мне ссылку на видео — я скачаю его без водяного знака и пришлю вам.\n\n"
-        "🤖 *Бот разработан студией KORSHUN BOTS*\n"
-        "📩 Заказать бота или посмотреть портфолио: @korshun112_bot"
+        "🤖 Бот разработан студией KORSHUN BOTS\n"
+        "📩 Заказать бота или посмотреть портфолио: @korshun112_bot\n\n"
+        "👨‍💼 Администратор: /admin — для управления ботом"
     )
 
     keyboard = [[InlineKeyboardButton("📊 Статистика", callback_data="stats")]]
@@ -130,21 +144,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_photo(
                         photo=f,
                         caption=text,
-                        parse_mode="Markdown",
                         reply_markup=reply_markup
                     )
             else:
                 await update.message.reply_photo(
                     photo=WELCOME_IMAGE_URL,
                     caption=text,
-                    parse_mode="Markdown",
                     reply_markup=reply_markup
                 )
         except Exception as e:
             logger.error(f"Ошибка отправки фото: {e}")
-            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+            await update.message.reply_text(text, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+        await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -153,16 +165,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_valid_url(text):
         await update.message.reply_text(
-            "❌ *Неверная ссылка!*\n\n"
+            "❌ Неверная ссылка!\n\n"
             "Поддерживаются ссылки на:\n"
             "• TikTok (tiktok.com)\n"
             "• YouTube / Shorts (youtube.com, youtu.be)\n"
-            "• Instagram (instagram.com)",
-            parse_mode="Markdown"
+            "• Instagram (instagram.com)"
         )
         return
 
-    status_msg = await update.message.reply_text("⏳ *Скачиваю видео...*", parse_mode="Markdown")
+    status_msg = await update.message.reply_text("⏳ Скачиваю видео...")
 
     try:
         filename = await download_video(text)
@@ -172,23 +183,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with open(filename, "rb") as f:
                 await update.message.reply_video(
                     video=f,
-                    caption="✅ *Видео без водяного знака готово!*",
-                    parse_mode="Markdown",
+                    caption="✅ Видео без водяного знака готово!",
                     supports_streaming=True
                 )
             os.remove(filename)
         else:
             await status_msg.edit_text(
-                "❌ *Не удалось скачать видео.*\n\n"
+                "❌ Не удалось скачать видео.\n\n"
                 "Возможные причины:\n"
                 "• Ссылка недоступна\n"
                 "• Видео защищено от скачивания\n"
-                "• Попробуйте позже",
-                parse_mode="Markdown"
+                "• Попробуйте позже"
             )
     except Exception as e:
         logger.error(f"Ошибка обработки: {e}")
-        await status_msg.edit_text("❌ *Произошла ошибка. Попробуйте позже.*", parse_mode="Markdown")
+        await status_msg.edit_text("❌ Произошла ошибка. Попробуйте позже.")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -197,17 +206,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stats = load_stats()
         users = load_users()
         await query.edit_message_text(
-            f"📊 *Статистика бота*\n\n"
+            f"📊 Статистика бота\n\n"
             f"👥 Всего пользователей: {len(users)}\n"
-            f"📥 Всего скачиваний: {stats['total_downloads']}",
-            parse_mode="Markdown"
+            f"📥 Всего скачиваний: {stats['total_downloads']}"
         )
 
 # ===================== АДМИН-ПАНЕЛЬ =====================
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ *Доступ запрещён.*", parse_mode="Markdown")
+        await update.message.reply_text("⛔ Доступ запрещён.")
         return
     keyboard = [
         [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
@@ -215,8 +223,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
     ]
     await update.message.reply_text(
-        "🔧 *Админ-панель*\n\nВыберите действие:",
-        parse_mode="Markdown",
+        "🔧 Админ-панель\n\nВыберите действие:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -225,42 +232,38 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user = update.effective_user
     if user.id != ADMIN_ID:
-        await query.edit_message_text("⛔ *Доступ запрещён.*", parse_mode="Markdown")
+        await query.edit_message_text("⛔ Доступ запрещён.")
         return
 
     if query.data == "admin_stats":
         stats = load_stats()
         users = load_users()
         await query.edit_message_text(
-            f"📊 *Статистика бота*\n\n"
+            f"📊 Статистика бота\n\n"
             f"👥 Всего пользователей: {len(users)}\n"
             f"📥 Всего скачиваний: {stats['total_downloads']}",
-            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
         )
     elif query.data == "admin_users":
         users = load_users()
         if not users:
             await query.edit_message_text(
-                "👥 *Пользователи*\n\nПока нет зарегистрированных пользователей.",
-                parse_mode="Markdown",
+                "👥 Пользователи\n\nПока нет зарегистрированных пользователей.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
             )
             return
-        user_list = "\n".join([f"• `{uid}`" for uid in sorted(users)])
+        user_list = "\n".join([f"• {uid}" for uid in sorted(users)])
         await query.edit_message_text(
-            f"👥 *Пользователи*\n\n{user_list}",
-            parse_mode="Markdown",
+            f"👥 Пользователи\n\n{user_list}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
         )
     elif query.data == "admin_broadcast":
         context.user_data["broadcast_mode"] = True
         await query.edit_message_text(
-            "📢 *Рассылка*\n\n"
+            "📢 Рассылка\n\n"
             "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
             "Поддерживаются текст, фото, видео, документы.\n\n"
-            "Для отмены отправьте /cancel",
-            parse_mode="Markdown"
+            "Для отмены отправьте /cancel"
         )
     elif query.data == "admin_back":
         keyboard = [
@@ -269,8 +272,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
         ]
         await query.edit_message_text(
-            "🔧 *Админ-панель*\n\nВыберите действие:",
-            parse_mode="Markdown",
+            "🔧 Админ-панель\n\nВыберите действие:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -283,13 +285,12 @@ async def broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     users = load_users()
     if not users:
-        await update.message.reply_text("❌ *Нет пользователей для рассылки.*", parse_mode="Markdown")
+        await update.message.reply_text("❌ Нет пользователей для рассылки.")
         context.user_data["broadcast_mode"] = False
         return
 
     await update.message.reply_text(
-        f"📢 *Начинаю рассылку для {len(users)} пользователей...*",
-        parse_mode="Markdown"
+        f"📢 Начинаю рассылку для {len(users)} пользователей..."
     )
 
     success = 0
@@ -309,10 +310,9 @@ async def broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["broadcast_mode"] = False
     await update.message.reply_text(
-        f"✅ *Рассылка завершена!*\n\n"
+        f"✅ Рассылка завершена!\n\n"
         f"✅ Успешно: {success}\n"
-        f"❌ Ошибок: {failed}",
-        parse_mode="Markdown"
+        f"❌ Ошибок: {failed}"
     )
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -321,7 +321,7 @@ async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if context.user_data.get("broadcast_mode"):
         context.user_data["broadcast_mode"] = False
-        await update.message.reply_text("✅ *Рассылка отменена.*", parse_mode="Markdown")
+        await update.message.reply_text("✅ Рассылка отменена.")
 
 # ===================== ЗАПУСК =====================
 def main():
