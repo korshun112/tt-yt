@@ -3,6 +3,7 @@ import re
 import logging
 import json
 import asyncio
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,7 +13,6 @@ from telegram.ext import (
 import yt_dlp
 import shutil
 
-# ===================== НАСТРОЙКИ =====================
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
@@ -20,6 +20,9 @@ WELCOME_IMAGE_URL = os.getenv("WELCOME_IMAGE_URL", "")
 
 USERS_FILE = "users.json"
 STATS_FILE = "stats.json"
+ISSUES_FILE = "issues.json"
+
+user_last_issue = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,7 +30,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ===================== РАБОТА С ДАННЫМИ =====================
 def load_users():
     try:
         with open(USERS_FILE, "r", encoding="utf-8") as f:
@@ -64,9 +66,18 @@ def increment_stats():
     save_stats(stats)
     return stats["total_downloads"]
 
-# ===================== СКАЧИВАНИЕ ВИДЕО С FFMPEG =====================
+def load_issues():
+    try:
+        with open(ISSUES_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def save_issues(issues):
+    with open(ISSUES_FILE, "w", encoding="utf-8") as f:
+        json.dump(issues, f, ensure_ascii=False, indent=2)
+
 async def download_video(url: str) -> str:
-    # Ищем ffmpeg: сначала в системе, затем в папке с ботом
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
         local_ffmpeg = os.path.join(os.path.dirname(__file__), "ffmpeg")
@@ -116,7 +127,6 @@ def is_valid_url(url: str) -> bool:
     ]
     return any(re.search(pattern, url) for pattern in patterns)
 
-# ===================== ОБРАБОТЧИКИ КОМАНД =====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user(user.id)
@@ -130,11 +140,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 Как пользоваться:\n"
         "Просто отправьте мне ссылку на видео — я скачаю его без водяного знака и пришлю вам.\n\n"
         "🤖 Бот разработан студией KORSHUN BOTS\n"
-        "📩 Заказать бота или посмотреть портфолио: @korshun112_bot\n\n"
-        "👨‍💼 Администратор: /admin — для управления ботом"
+        "📩 Заказать бота или посмотреть портфолио: @korshun112_bot"
     )
 
-    keyboard = [[InlineKeyboardButton("📊 Статистика", callback_data="stats")]]
+    keyboard = [
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
+        [InlineKeyboardButton("💬 Сообщить об ошибке", callback_data="report_issue")]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if WELCOME_IMAGE_URL:
@@ -161,6 +173,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
+
+    if user.id == ADMIN_ID and context.user_data.get("broadcast_mode"):
+        await broadcast_handler(update, context)
+        return
+
+    if context.user_data.get("awaiting_issue"):
+        await handle_issue_text(update, context)
+        return
+
     add_user(user.id)
 
     if not is_valid_url(text):
@@ -202,16 +223,72 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == "stats":
+    data = query.data
+
+    if data == "stats":
         stats = load_stats()
         users = load_users()
         await query.edit_message_text(
             f"📊 Статистика бота\n\n"
             f"👥 Всего пользователей: {len(users)}\n"
-            f"📥 Всего скачиваний: {stats['total_downloads']}"
+            f"📥 Всего скачиваний: {stats['total_downloads']}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]])
+        )
+    elif data == "back_to_start":
+        await cmd_start(update, context)
+    elif data == "report_issue":
+        user = update.effective_user
+        last_time = user_last_issue.get(user.id)
+        if last_time and (datetime.now() - last_time) < timedelta(minutes=90):
+            remaining = int(90 - (datetime.now() - last_time).total_seconds() // 60)
+            await query.edit_message_text(
+                f"⚠️ Вы уже отправляли сообщение об ошибке. Повторить можно через {remaining} минут.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]])
+            )
+            return
+        context.user_data["awaiting_issue"] = True
+        await query.edit_message_text(
+            "📝 Опишите проблему или баг, с которым вы столкнулись.\n\n"
+            "Отправьте ваше сообщение одним текстом. Мы постараемся решить проблему как можно быстрее.\n\n"
+            "Для отмены отправьте /cancel",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel_issue")]])
         )
 
-# ===================== АДМИН-ПАНЕЛЬ =====================
+async def cancel_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("awaiting_issue", None)
+    await query.edit_message_text("❌ Отправка сообщения об ошибке отменена.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]]))
+
+async def handle_issue_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    text = update.message.text.strip()
+    context.user_data.pop("awaiting_issue", None)
+
+    user_last_issue[user.id] = datetime.now()
+
+    issues = load_issues()
+    issue = {
+        "id": len(issues) + 1,
+        "user_id": user.id,
+        "user_name": user.full_name,
+        "text": text,
+        "timestamp": datetime.now().isoformat(),
+        "resolved": False
+    }
+    issues.append(issue)
+    save_issues(issues)
+
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=f"🆕 Новая проблема\nОт: {user.full_name} (ID: {user.id})\nТекст: {text}"
+    )
+
+    await update.message.reply_text(
+        "✅ Ваше сообщение отправлено! Мы свяжемся с вами в ближайшее время.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]])
+    )
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id != ADMIN_ID:
@@ -221,6 +298,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
+        [InlineKeyboardButton("⚠️ Проблемы", callback_data="admin_issues")],
     ]
     await update.message.reply_text(
         "🔧 Админ-панель\n\nВыберите действие:",
@@ -263,13 +341,42 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📢 Рассылка\n\n"
             "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
             "Поддерживаются текст, фото, видео, документы.\n\n"
-            "Для отмены отправьте /cancel"
+            "Для отмены отправьте /cancel",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отменить", callback_data="admin_back")]])
         )
+    elif query.data == "admin_issues":
+        issues = load_issues()
+        unresolved = [i for i in issues if not i.get("resolved", False)]
+        if not unresolved:
+            await query.edit_message_text(
+                "✅ Нет нерешённых проблем.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
+            )
+            return
+        text = "⚠️ Проблемы\n\n"
+        for i in unresolved[:10]:
+            text += f"ID {i['id']}: {i['user_name']} – {i['text'][:50]}...\n"
+        text += f"\nВсего нерешённых: {len(unresolved)}"
+        keyboard = []
+        for i in unresolved[:5]:
+            keyboard.append([InlineKeyboardButton(f"Решить #{i['id']}", callback_data=f"resolve_issue_{i['id']}")])
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_back")])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    elif query.data.startswith("resolve_issue_"):
+        issue_id = int(query.data.split("_")[2])
+        issues = load_issues()
+        for i in issues:
+            if i["id"] == issue_id:
+                i["resolved"] = True
+                break
+        save_issues(issues)
+        await query.edit_message_text("✅ Проблема отмечена как решённая.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_issues")]]))
     elif query.data == "admin_back":
         keyboard = [
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
             [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton("👥 Пользователи", callback_data="admin_users")],
+            [InlineKeyboardButton("⚠️ Проблемы", callback_data="admin_issues")],
         ]
         await query.edit_message_text(
             "🔧 Админ-панель\n\nВыберите действие:",
@@ -323,19 +430,27 @@ async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["broadcast_mode"] = False
         await update.message.reply_text("✅ Рассылка отменена.")
 
-# ===================== ЗАПУСК =====================
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id == ADMIN_ID and context.user_data.get("broadcast_mode"):
+        context.user_data["broadcast_mode"] = False
+        await update.message.reply_text("✅ Рассылка отменена.")
+    if context.user_data.get("awaiting_issue"):
+        context.user_data.pop("awaiting_issue", None)
+        await update.message.reply_text("✅ Отправка сообщения об ошибке отменена.")
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("cancel", cancel_broadcast))
+    app.add_handler(CommandHandler("cancel", cancel_command))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, broadcast_handler))
 
-    app.add_handler(CallbackQueryHandler(button_callback, pattern="^stats$"))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
+    app.add_handler(CallbackQueryHandler(button_callback, pattern="^(stats|back_to_start|report_issue|cancel_issue)$"))
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_|^resolve_issue_"))
 
     logger.info("🚀 Бот запущен!")
     app.run_polling()
