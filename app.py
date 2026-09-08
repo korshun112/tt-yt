@@ -17,6 +17,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 WELCOME_IMAGE_URL = os.getenv("WELCOME_IMAGE_URL", "")
+PROXY_URL = os.getenv("PROXY_URL", "")  
 
 USERS_FILE = "users.json"
 STATS_FILE = "stats.json"
@@ -149,10 +150,18 @@ async def download_video(url: str) -> str:
             "key": "FFmpegVideoConvertor",
             "preferedformat": "mp4",
         }],
-        "impersonate": "chrome",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "referer": "https://www.tiktok.com/",
+        "add_headers": {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3",
+        },
     }
     if ffmpeg_path:
         ydl_opts["ffmpeg_location"] = ffmpeg_path
+    if PROXY_URL:
+        ydl_opts["proxy"] = PROXY_URL
+        logger.info(f"Используется прокси: {PROXY_URL}")
 
     os.makedirs("downloads", exist_ok=True)
     try:
@@ -177,7 +186,11 @@ async def download_video(url: str) -> str:
                 "no_warnings": True,
                 "noplaylist": True,
                 "extract_flat": False,
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "referer": "https://www.tiktok.com/",
             }
+            if PROXY_URL:
+                ydl_opts_no_ffmpeg["proxy"] = PROXY_URL
             with yt_dlp.YoutubeDL(ydl_opts_no_ffmpeg) as ydl:
                 info = await loop.run_in_executor(None, lambda: ydl.extract_info(url, download=True))
                 filename = ydl.prepare_filename(info)
@@ -247,8 +260,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ Не удалось скачать видео.\n\n"
                 "Возможные причины:\n"
                 "• Ссылка недоступна\n"
-                "• Видео защищено от скачивания\n"
-                "• Попробуйте позже"
+                "• Технические работы сервиса\n"
+                "Для решения сообщите о проблеме в главном меню бота."
             )
     except Exception as e:
         logger.error(f"Ошибка обработки: {e}")
