@@ -149,6 +149,7 @@ async def download_video(url: str) -> str:
             "key": "FFmpegVideoConvertor",
             "preferedformat": "mp4",
         }],
+        "impersonate": "chrome",
     }
     if ffmpeg_path:
         ydl_opts["ffmpeg_location"] = ffmpeg_path
